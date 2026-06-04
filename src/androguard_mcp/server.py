@@ -1,6 +1,9 @@
 """androguard MCP Server — strict bounded-output tool implementations."""
 
+import asyncio
+import functools
 import os
+import threading
 from typing import Any
 
 # Suppress androguard loguru noise
@@ -8,9 +11,13 @@ from loguru import logger
 
 logger.remove()
 
+import contextlib
+
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import Tool, TextContent
+from starlette.applications import Starlette
+from starlette.routing import Mount
 
 from androguard_mcp import (
     MAX_BYTECODE_INSTRS,
@@ -24,7 +31,24 @@ from androguard_mcp import (
 )
 from androguard_mcp.tools import TOOL_DEFINITIONS
 
-WORKSPACE_DIR = os.getcwd()
+WORKSPACE_DIR = os.environ.get("ANDROGUARD_WORKSPACE", os.getcwd())
+
+# threading.Lock (not asyncio.Lock) is correct here: we're protecting a shared
+# object accessed from executor threads, not from coroutines.
+# asyncio.Lock would bind to an event loop at creation time and break across loops.
+_tlock = threading.Lock()
+
+
+async def _call_analyzer(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run a synchronous analyzer method in a thread-pool under the shared lock."""
+    loop = asyncio.get_running_loop()
+
+    def _run_locked() -> Any:
+        with _tlock:
+            return functools.partial(fn, *args, **kwargs)()
+
+    return await loop.run_in_executor(None, _run_locked)
+
 
 # ---- output formatters ----
 # Keep each tool's text output under ~2000 chars / ~60 lines.
@@ -63,7 +87,7 @@ async def tool_load_apk(path: str) -> str:
     apk_path = os.path.join(WORKSPACE_DIR, path)
     if not os.path.exists(apk_path):
         return f"Error: file not found: {path}"
-    info = analyzer.load(apk_path)
+    info = await _call_analyzer(analyzer.load, apk_path)
     return (
         f"Loaded: {path}\n"
         f"  Package: {info['package']}\n"
@@ -77,7 +101,7 @@ async def tool_search_string(pattern: str, limit: int = MAX_STRING_RESULTS) -> s
     if not analyzer.loaded:
         return "Error: No APK loaded."
     limit = min(limit, MAX_STRING_RESULTS)
-    matches = analyzer.search_strings(pattern, limit)
+    matches = await _call_analyzer(analyzer.search_strings, pattern, limit)
     if not matches:
         return f"No strings matching '{pattern}'."
     n = len(matches)
@@ -87,7 +111,7 @@ async def tool_search_string(pattern: str, limit: int = MAX_STRING_RESULTS) -> s
 async def tool_find_string_refs(string: str, dex_index: int | None = None) -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    results = analyzer.find_string_refs(string, dex_index)
+    results = await _call_analyzer(analyzer.find_string_refs, string, dex_index)
     if not results:
         return f"No methods reference {string!r}."
     return _join(results, f"Methods referencing {string!r}", 30)
@@ -96,7 +120,7 @@ async def tool_find_string_refs(string: str, dex_index: int | None = None) -> st
 async def tool_get_class_info(class_name: str) -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    s = analyzer.get_class_summary(class_name)
+    s = await _call_analyzer(analyzer.get_class_summary, class_name)
     if s is None:
         return f"Class '{class_name}' not found."
 
@@ -139,7 +163,7 @@ async def tool_get_bytecode(
     if not analyzer.loaded:
         return "Error: No APK loaded."
     limit = min(limit, MAX_BYTECODE_INSTRS)
-    data = analyzer.get_bytecode(class_name, method_name, method_desc, offset, limit)
+    data = await _call_analyzer(analyzer.get_bytecode, class_name, method_name, method_desc, offset, limit)
     if data is None:
         return f"Method '{method_name}' not found in class '{class_name}'."
 
@@ -163,7 +187,7 @@ async def tool_get_bytecode(
 async def tool_get_xref(method_signature: str, direction: str = "both") -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    data = analyzer.get_xref(method_signature)
+    data = await _call_analyzer(analyzer.get_xref, method_signature)
     if data is None:
         return f"Method not found or invalid signature: {method_signature}"
 
@@ -188,7 +212,7 @@ async def tool_get_xref(method_signature: str, direction: str = "both") -> str:
 async def tool_get_static_fields(class_name: str) -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    fields = analyzer.get_static_fields(class_name)
+    fields = await _call_analyzer(analyzer.get_static_fields, class_name)
     if fields is None:
         return f"Class '{class_name}' not found."
     if not fields:
@@ -209,7 +233,7 @@ async def tool_search_class(pattern: str, limit: int = MAX_CLASS_RESULTS) -> str
     if not analyzer.loaded:
         return "Error: No APK loaded."
     limit = min(limit, MAX_CLASS_RESULTS)
-    matches = analyzer.search_classes(pattern, limit)
+    matches = await _call_analyzer(analyzer.search_classes, pattern, limit)
     if not matches:
         return f"No classes matching '{pattern}'."
     n = len(matches)
@@ -219,7 +243,7 @@ async def tool_search_class(pattern: str, limit: int = MAX_CLASS_RESULTS) -> str
 async def tool_get_manifest() -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    m = analyzer.get_manifest_summary()
+    m = await _call_analyzer(analyzer.get_manifest_summary)
     if m is None:
         return "Error: No APK loaded."
 
@@ -253,7 +277,7 @@ async def tool_get_manifest() -> str:
 async def tool_get_method_info(class_name: str, method_name: str, method_desc: str = "") -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    info = analyzer.get_method_info(class_name, method_name, method_desc)
+    info = await _call_analyzer(analyzer.get_method_info, class_name, method_name, method_desc)
     if info is None:
         return f"Method '{method_name}' not found in class '{class_name}'."
 
@@ -311,14 +335,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {type(e).__name__}: {e}")]
 
 
-async def main() -> None:
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+PORT = int(os.environ.get("ANDROGUARD_MCP_PORT", "18765"))
+
+
+def create_starlette_app() -> Starlette:
+    session_manager = StreamableHTTPSessionManager(app=app, stateless=False)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette):
+        async with session_manager.run():
+            yield
+
+    return Starlette(
+        routes=[Mount("/sse", app=session_manager.handle_request)],
+        lifespan=lifespan,
+    )
 
 
 def cli() -> None:
-    import asyncio
-    asyncio.run(main())
+    import uvicorn
+    uvicorn.run(create_starlette_app(), host="127.0.0.1", port=PORT)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,12 @@ def _hex_bytes(data: list[int], max_len: int = 64) -> str:
     return bytes(data[:max_len]).hex() + f"…<{len(data)} bytes>"
 
 
+def _normalize_method_name(name: str) -> str:
+    """Decode HTML entities in method names (e.g. '&lt;init&gt;' → '<init>')."""
+    import html
+    return html.unescape(name)
+
+
 def _is_const_string(instr: Any) -> bool:
     try:
         return instr.get_name() in ("const-string", "const-string/jumbo")
@@ -307,7 +313,7 @@ class APKAnalyzer:
             code = m.get_code()
             real_count = 0
             if code is not None:
-                real_count = len(_take_from_generator(MAX_BYTECODE_INSTRS + 1, code.get_bc().get_instructions()))
+                real_count = sum(1 for _ in itertools.islice(code.get_bc().get_instructions(), MAX_BYTECODE_INSTRS + 1))
 
             methods.append(MethodSummary(
                 name=m.get_name(),
@@ -382,6 +388,7 @@ class APKAnalyzer:
         limit: int = MAX_BYTECODE_INSTRS,
     ) -> dict[str, Any] | None:
         """Return paginated bytecode for a method."""
+        method_name = _normalize_method_name(method_name)
         r = self.find_dex_for_class(class_name)
         if r is None:
             return None
@@ -418,7 +425,7 @@ class APKAnalyzer:
                 instrs: list[Instruction] = []
                 for i, instr in enumerate(_take_from_generator(limit, gen)):
                     try:
-                        show = instr.show(0)
+                        show = instr.show_buff(0)
                     except Exception:
                         show = None
                     if show and len(show) > MAX_BYTECODE_SHOW_LEN:
@@ -452,7 +459,7 @@ class APKAnalyzer:
         m = re.match(r"(.+?)(\(.+)", method_part)
         if not m:
             return None
-        m_name, m_desc = m.group(1), m.group(2)
+        m_name, m_desc = _normalize_method_name(m.group(1)), m.group(2)
         ma = self.analysis.get_method_analysis_by_name(class_name, m_name, m_desc)
         if not ma:
             return None
@@ -490,6 +497,7 @@ class APKAnalyzer:
     def get_method_info(
         self, class_name: str, method_name: str, method_desc: str = ""
     ) -> MethodInfo | None:
+        method_name = _normalize_method_name(method_name)
         r = self.find_dex_for_class(class_name)
         if r is None:
             return None
