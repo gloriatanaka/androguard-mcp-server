@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "androguard-mcp-server"
+version = "0.1.0"
+description = "MCP server wrapping androguard for AI-assisted DEX bytecode analysis"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "androguard>=4.1.0",
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+androguard-mcp = "androguard_mcp.server:cli"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/androguard_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
