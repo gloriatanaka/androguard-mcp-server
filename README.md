@@ -14,13 +14,32 @@ Provides structured, indexed access to APK internals at the **DEX bytecode level
 | `find_string_refs` | Find methods referencing a specific string (`const-string`) |
 | `get_class_info` | Class summary: superclass, interfaces, fields, methods |
 | `get_static_fields` | Static fields with initial values (string tables, constants) |
-| `get_bytecode` | Full Dalvik bytecode for a method |
+| `get_bytecode` | Full Dalvik bytecode for a method (paginated, 60 instrs/page) |
 | `get_method_info` | Method summary with cross-reference overview |
 | `get_xref` | Cross-references: callers and callees |
 | `search_class` | Regex search for class names |
 | `get_manifest` | AndroidManifest summary |
 
-## Usage with Claude Code
+## Transport: HTTP (Streamable HTTP)
+
+The server runs as an HTTP server using the MCP Streamable HTTP transport. This avoids the stdio pollution issue that arises when androguard or its dependencies call `print()` internally.
+
+### Starting the server
+
+```bash
+# Run from your APK workspace directory
+androguard-mcp
+
+# Or specify the workspace explicitly
+ANDROGUARD_WORKSPACE=/path/to/apk/dir androguard-mcp
+
+# Custom port (default: 18765)
+ANDROGUARD_MCP_PORT=9000 androguard-mcp
+```
+
+The server listens on `http://127.0.0.1:18765` by default.
+
+### Configuring Claude Code
 
 Add to `.mcp.json` in your project root:
 
@@ -28,31 +47,29 @@ Add to `.mcp.json` in your project root:
 {
   "mcpServers": {
     "androguard": {
-      "command": "/path/to/venv/bin/python3",
-      "args": ["-m", "androguard_mcp.server"],
-      "env": {}
+      "type": "http",
+      "url": "http://127.0.0.1:18765/sse"
     }
   }
 }
 ```
 
-Or install the package first, then use the entry point:
+> **Note:** The server must be started manually before Claude Code connects to it. It does not auto-start like stdio-mode servers.
 
-```json
-{
-  "mcpServers": {
-    "androguard": {
-      "command": "/path/to/venv/bin/androguard-mcp",
-      "args": [],
-      "env": {}
-    }
-  }
-}
-```
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANDROGUARD_MCP_PORT` | `18765` | TCP port to listen on |
+| `ANDROGUARD_WORKSPACE` | `$PWD` | Directory scanned for APKs and used as the base path for `load_apk` |
+
+## Notes on method names
+
+Dalvik constructor and static-initializer methods (`<init>`, `<clinit>`) can be passed with or without angle brackets — the server normalises HTML-entity-encoded names (`&lt;init&gt;` → `<init>`) automatically.
 
 ## Development
 
-```
+```bash
 pip install -e ".[dev]"
 pytest -v
 ```
