@@ -132,6 +132,48 @@ class TestAnalysisDB:
         d.set_alias("Lcom/b;", "Beta")
         assert d.alias_count() == 2
 
+    def test_count_aliases_no_pattern(self, tmp_path):
+        d = AnalysisDB()
+        d.open(str(tmp_path / "test.sqlite"), create_if_missing=True)
+        d.set_alias("Lcom/a;", "Alpha")
+        d.set_alias("Lcom/b;", "Beta")
+        d.set_alias("Lcom/c;", "Gamma")
+        assert d.count_aliases() == 3
+
+    def test_count_aliases_with_pattern(self, tmp_path):
+        d = AnalysisDB()
+        d.open(str(tmp_path / "test.sqlite"), create_if_missing=True)
+        d.set_alias("Lcom/auth/Manager;", "AuthManager")
+        d.set_alias("Lcom/net/Client;", "NetClient")
+        assert d.count_aliases("auth") == 1
+        assert d.count_aliases("net") == 1
+        assert d.count_aliases("Manager") == 1  # matches alias
+        assert d.count_aliases("xyz") == 0
+
+    def test_list_aliases_pagination(self, tmp_path):
+        d = AnalysisDB()
+        d.open(str(tmp_path / "test.sqlite"), create_if_missing=True)
+        for i in range(5):
+            d.set_alias(f"Lcom/{i};", f"Class{i}")
+        page1 = d.list_aliases(offset=0, limit=3)
+        page2 = d.list_aliases(offset=3, limit=3)
+        assert len(page1) == 3
+        assert len(page2) == 2
+        all_originals = {r["original"] for r in page1 + page2}
+        assert len(all_originals) == 5
+
+    def test_list_aliases_pagination_with_pattern(self, tmp_path):
+        d = AnalysisDB()
+        d.open(str(tmp_path / "test.sqlite"), create_if_missing=True)
+        for i in range(4):
+            d.set_alias(f"Lcom/auth/{i};", f"Auth{i}")
+        d.set_alias("Lcom/net/x;", "NetX")
+        page1 = d.list_aliases(pattern="auth", offset=0, limit=2)
+        page2 = d.list_aliases(pattern="auth", offset=2, limit=2)
+        assert len(page1) == 2
+        assert len(page2) == 2
+        assert d.count_aliases("auth") == 4
+
     def test_persistence(self, tmp_path):
         p = str(tmp_path / "test.sqlite")
         d1 = AnalysisDB()
@@ -276,6 +318,23 @@ class TestServerDBTools:
         result = await tool_list_aliases()
         assert "[Alpha] Lcom/a;" in result
         assert "[Beta] Lcom/b;" in result
+
+    @pytest.mark.asyncio
+    async def test_list_aliases_pagination(self, isolated_db):
+        from androguard_mcp.server import tool_load_db, tool_set_alias, tool_list_aliases
+        await tool_load_db(path=str(isolated_db / "t.sqlite"), create_if_missing=True)
+        for i in range(5):
+            await tool_set_alias(f"Lcom/{i};", f"Class{i}")
+        page1 = await tool_list_aliases(limit=3)
+        page2 = await tool_list_aliases(offset=3, limit=3)
+        assert "offset=3" in page1 or "next page" in page1
+        assert "Class" in page1
+        assert "Class" in page2
+
+    def test_all_new_tools_registered(self):
+        from androguard_mcp.server import TOOL_MAP
+        for name in ("load_db", "set_alias", "get_alias", "list_aliases", "delete_alias"):
+            assert name in TOOL_MAP, f"Tool '{name}' not in TOOL_MAP"
 
     @pytest.mark.asyncio
     async def test_delete_alias(self, isolated_db):

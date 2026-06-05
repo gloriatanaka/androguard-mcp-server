@@ -15,7 +15,7 @@ class TestAPKAnalyzerNoAPK:
         assert a.find_dex_for_class("LX/1Af;") is None
         assert a.search_strings(".*") == []
         assert a.search_classes(".*") == []
-        assert a.find_string_refs("test") == []
+        assert a.find_string_refs("test").results == []
         assert a.get_bytecode("Lfoo;", "bar") is None
         assert a.get_xref("Lfoo;->bar()V") is None
         assert a.get_class_summary("Lfoo;") is None
@@ -55,10 +55,14 @@ class TestServerNoAPK:
         ("search_string", {"pattern": "foo"}),
         ("find_string_refs", {"string": "foo"}),
         ("get_class_info", {"class_name": "Lfoo;"}),
+        ("list_fields", {"class_name": "Lfoo;"}),
+        ("list_methods", {"class_name": "Lfoo;"}),
         ("get_bytecode", {"class_name": "Lfoo;", "method_name": "bar"}),
         ("get_xref", {"method_signature": "Lfoo;->bar()V"}),
+        ("get_field_xref", {"class_name": "Lfoo;", "field_name": "mBar"}),
         ("get_static_fields", {"class_name": "Lfoo;"}),
         ("search_class", {"pattern": "foo"}),
+        ("search_method", {"pattern": "foo"}),
         ("get_manifest", {}),
         ("get_method_info", {"class_name": "Lfoo;", "method_name": "bar"}),
     ])
@@ -73,15 +77,19 @@ class TestServerNoAPK:
             "list_apks",
             "load_apk",
             "load_db",
+            "get_manifest",
+            "search_class",
             "search_string",
             "find_string_refs",
+            "search_method",
             "get_class_info",
+            "list_fields",
+            "list_methods",
+            "get_method_info",
             "get_bytecode",
             "get_xref",
+            "get_field_xref",
             "get_static_fields",
-            "search_class",
-            "get_manifest",
-            "get_method_info",
             "set_alias",
             "get_alias",
             "list_aliases",

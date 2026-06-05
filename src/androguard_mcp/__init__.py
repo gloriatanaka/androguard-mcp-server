@@ -84,8 +84,27 @@ class XrefResult:
     signature: str
     callers: list[str]
     total_callers: int
+    has_more_callers: bool
     callees: list[str]
     total_callees: int
+    has_more_callees: bool
+
+@dataclass
+class StringRefResult:
+    string: str
+    results: list[str]
+    offset: int
+    has_more: bool
+
+@dataclass
+class FieldXrefResult:
+    signature: str
+    readers: list[str]
+    total_readers: int
+    has_more_readers: bool
+    writers: list[str]
+    total_writers: int
+    has_more_writers: bool
 
 @dataclass
 class ManifestSummary:
@@ -243,15 +262,37 @@ class APKAnalyzer:
                         return results
         return results
 
+    # ---- method search ----
+
+    def search_methods(self, pattern: str, limit: int = MAX_CLASS_RESULTS, offset: int = 0) -> list[str]:
+        """Return methods whose name matches pattern, up to offset+limit+1 items."""
+        if not self.loaded:
+            return []
+        pat = re.compile(pattern, re.IGNORECASE)
+        safe_limit = offset + limit + 1
+        results: list[str] = []
+        for di, dx in enumerate(self.dex_list):
+            for cls in dx.get_classes():
+                for m in cls.get_methods():
+                    if pat.search(m.get_name()):
+                        results.append(
+                            f"[DEX{di}] {cls.get_name()}->{m.get_name()}{m.get_descriptor()}"
+                        )
+                        if len(results) >= safe_limit:
+                            return results
+        return results
+
     # ---- string refs ----
 
     def find_string_refs(
-        self, string: str, dex_index: int | None = None
-    ) -> list[str]:
-        """Find methods referencing a string.  Returns at most MAX_STRING_RESULTS."""
+        self, string: str, dex_index: int | None = None,
+        offset: int = 0, limit: int = MAX_STRING_RESULTS,
+    ) -> StringRefResult:
+        """Find methods referencing a string, paginated."""
         if not self.loaded:
-            return []
-        results: list[str] = []
+            return StringRefResult(string=string, results=[], offset=offset, has_more=False)
+        safe_limit = offset + limit + 1
+        collected: list[str] = []
         dex_range = (
             enumerate(self.dex_list)
             if dex_index is None
@@ -270,11 +311,21 @@ class APKAnalyzer:
                     for instr in bc.get_instructions():
                         if _is_const_string(instr) and instr.get_string() == string:
                             sig = f"[DEX{di}] {m.get_class_name()}->{m.get_name()}{m.get_descriptor()}"
-                            results.append(sig)
+                            collected.append(sig)
                             break
-                    if len(results) >= MAX_STRING_RESULTS:
-                        return results
-        return results
+                    if len(collected) >= safe_limit:
+                        return StringRefResult(
+                            string=string,
+                            results=collected[offset:offset + limit],
+                            offset=offset,
+                            has_more=True,
+                        )
+        return StringRefResult(
+            string=string,
+            results=collected[offset:offset + limit],
+            offset=offset,
+            has_more=len(collected) > offset + limit,
+        )
 
     # ---- class summary ----
 
@@ -338,6 +389,76 @@ class APKAnalyzer:
             total_methods=len(all_methods),
             xref_from=xref_from,
         )
+
+    # ---- list fields (paginated) ----
+
+    def list_fields(
+        self, class_name: str, offset: int = 0, limit: int = MAX_FIELD_DISPLAY
+    ) -> dict[str, Any] | None:
+        cls = self._cls(class_name)
+        if cls is None:
+            return None
+        all_fields = cls.get_fields()
+        total = len(all_fields)
+        shown: list[FieldInfo] = []
+        for f in all_fields[offset:offset + limit]:
+            f_info = FieldInfo(
+                name=f.get_name(),
+                type=f.get_descriptor(),
+                access=f.get_access_flags_string() or "",
+                init_value=None,
+            )
+            iv = f.get_init_value()
+            if iv is not None:
+                try:
+                    if isinstance(iv, list):
+                        f_info.init_value = _hex_bytes(iv) if len(iv) <= 64 else f"byte[{len(iv)}]"
+                    else:
+                        f_info.init_value = _truncate(str(iv), 64)
+                except Exception:
+                    f_info.init_value = "<error>"
+            shown.append(f_info)
+        return {
+            "class_name": class_name,
+            "total": total,
+            "offset": offset,
+            "fields": shown,
+            "has_more": offset + limit < total,
+        }
+
+    # ---- list methods (paginated) ----
+
+    def list_methods(
+        self, class_name: str, offset: int = 0, limit: int = MAX_METHOD_DISPLAY
+    ) -> dict[str, Any] | None:
+        cls = self._cls(class_name)
+        if cls is None:
+            return None
+        all_methods = cls.get_methods()
+        total = len(all_methods)
+        shown: list[MethodSummary] = []
+        for m in all_methods[offset:offset + limit]:
+            code = m.get_code()
+            icount = 0
+            if code is not None:
+                icount = sum(
+                    1 for _ in itertools.islice(
+                        code.get_bc().get_instructions(), MAX_BYTECODE_INSTRS + 1
+                    )
+                )
+            shown.append(MethodSummary(
+                name=m.get_name(),
+                descriptor=m.get_descriptor(),
+                access=m.get_access_flags_string() or "",
+                instr_count=icount,
+            ))
+        return {
+            "class_name": class_name,
+            "total": total,
+            "offset": offset,
+            "methods": shown,
+            "has_more": offset + limit < total,
+        }
 
     # ---- static fields ----
 
@@ -449,7 +570,9 @@ class APKAnalyzer:
 
     # ---- xref ----
 
-    def get_xref(self, method_signature: str) -> XrefResult | None:
+    def get_xref(
+        self, method_signature: str, offset: int = 0, limit: int = MAX_XREF_DISPLAY
+    ) -> XrefResult | None:
         if not self.loaded:
             return None
         parts = method_signature.split("->")
@@ -467,16 +590,14 @@ class APKAnalyzer:
         xfrom_items = _take_from_generator(MAX_XREF_COUNT, ma.get_xref_from())
         total_callers = len(xfrom_items)
         xfrom_list = sorted(
-            xfrom_items[:MAX_XREF_DISPLAY],
-            key=lambda r: f"{r[0].name}->{r[1].name}",
-        )
+            xfrom_items, key=lambda r: f"{r[0].name}->{r[1].name}"
+        )[offset:offset + limit]
 
         xto_items = _take_from_generator(MAX_XREF_COUNT, ma.get_xref_to())
         total_callees = len(xto_items)
         xto_list = sorted(
-            xto_items[:MAX_XREF_DISPLAY],
-            key=lambda r: f"{r[0].name}->{r[1].name}",
-        )
+            xto_items, key=lambda r: f"{r[0].name}->{r[1].name}"
+        )[offset:offset + limit]
 
         return XrefResult(
             signature=f"{class_name}->{m_name}{m_desc}",
@@ -485,11 +606,74 @@ class APKAnalyzer:
                 for ref in xfrom_list
             ],
             total_callers=total_callers,
+            has_more_callers=offset + limit < total_callers,
             callees=[
                 f"{ref[1].name}{ref[1].descriptor} in {ref[0].name}"
                 for ref in xto_list
             ],
             total_callees=total_callees,
+            has_more_callees=offset + limit < total_callees,
+        )
+
+    # ---- field xref ----
+
+    def get_field_xref(
+        self,
+        class_name: str,
+        field_name: str,
+        field_type: str = "",
+        direction: str = "both",
+        offset: int = 0,
+        limit: int = MAX_XREF_DISPLAY,
+    ) -> FieldXrefResult | None:
+        if not self.loaded:
+            return None
+        cls = self._cls(class_name)
+        if cls is None:
+            return None
+        target = None
+        for f in cls.get_fields():
+            if f.get_name() == field_name:
+                if field_type and f.get_descriptor() != field_type:
+                    continue
+                target = f
+                break
+        if target is None:
+            return None
+        fa = self.analysis.get_field_analysis(target)
+        if fa is None:
+            return None
+        sig = f"{class_name}->{field_name}:{target.get_descriptor()}"
+        readers: list[str] = []
+        total_readers = 0
+        has_more_readers = False
+        writers: list[str] = []
+        total_writers = 0
+        has_more_writers = False
+        if direction in ("read", "both"):
+            raw = _take_from_generator(MAX_XREF_COUNT, fa.get_xref_read())
+            total_readers = len(raw)
+            has_more_readers = offset + limit < total_readers
+            readers = [
+                f"{r[0].name} -> {r[1].name}{r[1].descriptor}"
+                for r in sorted(raw, key=lambda r: r[1].name)[offset:offset + limit]
+            ]
+        if direction in ("write", "both"):
+            raw = _take_from_generator(MAX_XREF_COUNT, fa.get_xref_write())
+            total_writers = len(raw)
+            has_more_writers = offset + limit < total_writers
+            writers = [
+                f"{r[0].name} -> {r[1].name}{r[1].descriptor}"
+                for r in sorted(raw, key=lambda r: r[1].name)[offset:offset + limit]
+            ]
+        return FieldXrefResult(
+            signature=sig,
+            readers=readers,
+            total_readers=total_readers,
+            has_more_readers=has_more_readers,
+            writers=writers,
+            total_writers=total_writers,
+            has_more_writers=has_more_writers,
         )
 
     # ---- method info ----

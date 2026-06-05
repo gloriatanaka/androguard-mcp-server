@@ -20,7 +20,7 @@ class TestAPKAnalyzerNoAPK:
         assert a.find_dex_for_class("LX/1Af;") is None
         assert a.search_strings(".*") == []
         assert a.search_classes(".*") == []
-        assert a.find_string_refs("test") == []
+        assert a.find_string_refs("test").results == []
         assert a.get_bytecode("Lfoo;", "bar") is None
         assert a.get_xref("Lfoo;->bar()V") is None
         assert a.get_class_summary("Lfoo;") is None
@@ -92,14 +92,15 @@ class TestAPKAnalyzerStrings:
 
     @requires_apk
     def test_find_string_refs_noise(self, loaded_analyzer):
-        results = loaded_analyzer.find_string_refs("KeyAttribute")
-        assert len(results) > 0
-        assert any("Laau;" in r for r in results)
+        data = loaded_analyzer.find_string_refs("KeyAttribute")
+        assert len(data.results) > 0
+        assert any("Laau;" in r for r in data.results)
 
     @requires_apk
     def test_find_string_refs_missing(self, loaded_analyzer):
-        results = loaded_analyzer.find_string_refs("ZZZZNOTEXISTSZZZZ")
-        assert results == []
+        data = loaded_analyzer.find_string_refs("ZZZZNOTEXISTSZZZZ")
+        assert data.results == []
+        assert not data.has_more
 
 
 class TestAPKAnalyzerClasses:

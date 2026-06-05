@@ -118,6 +118,51 @@ async def tool_load_apk(path: str) -> str:
     )
 
 
+async def tool_get_manifest() -> str:
+    if not analyzer.loaded:
+        return "Error: No APK loaded."
+    m = await _call_analyzer(analyzer.get_manifest_summary)
+    if m is None:
+        return "Error: No APK loaded."
+
+    lines = [
+        f"=== {m.app_name} ({m.package}) ===",
+        f"Version: {m.version_name} (code {m.version_code})",
+        f"SDK: min={m.min_sdk} target={m.target_sdk}",
+        f"\nPermissions ({m.total_permissions} total, showing {len(m.permissions)}):",
+    ]
+    for p in m.permissions:
+        lines.append(f"  - {p}")
+    if m.total_permissions > len(m.permissions):
+        lines.append(f"  ... {m.total_permissions - len(m.permissions)} more")
+
+    lines.append(f"\nActivities ({m.total_activities} total, showing {len(m.activities)}):")
+    for a in m.activities:
+        lines.append(f"  - {a}")
+    if m.total_activities > len(m.activities):
+        lines.append(f"  ... {m.total_activities - len(m.activities)} more")
+
+    lines.append(f"\nServices ({len(m.services)}):")
+    for s in m.services:
+        lines.append(f"  - {s}")
+    lines.append(f"\nReceivers ({len(m.receivers)}):")
+    for r in m.receivers:
+        lines.append(f"  - {r}")
+
+    return _apply_aliases("\n".join(lines))
+
+
+async def tool_search_class(pattern: str, limit: int = MAX_CLASS_RESULTS) -> str:
+    if not analyzer.loaded:
+        return "Error: No APK loaded."
+    limit = min(limit, MAX_CLASS_RESULTS)
+    matches = await _call_analyzer(analyzer.search_classes, pattern, limit)
+    if not matches:
+        return f"No classes matching '{pattern}'."
+    n = len(matches)
+    return _apply_aliases(f"Classes matching '{pattern}' ({n}):\n" + "\n".join(f"  {m}" for m in matches))
+
+
 async def tool_search_string(pattern: str, limit: int = MAX_STRING_RESULTS) -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
@@ -129,13 +174,44 @@ async def tool_search_string(pattern: str, limit: int = MAX_STRING_RESULTS) -> s
     return _apply_aliases(f"Found {n} matches for '{pattern}':\n" + "\n".join(matches))
 
 
-async def tool_find_string_refs(string: str, dex_index: int | None = None) -> str:
+async def tool_find_string_refs(
+    string: str, dex_index: int | None = None, offset: int = 0, limit: int = MAX_STRING_RESULTS
+) -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    results = await _call_analyzer(analyzer.find_string_refs, string, dex_index)
-    if not results:
+    limit = min(limit, MAX_STRING_RESULTS)
+    data = await _call_analyzer(analyzer.find_string_refs, string, dex_index, offset, limit)
+    if not data.results:
+        if offset:
+            return f"No more methods reference {string!r} at offset={offset}."
         return f"No methods reference {string!r}."
-    return _apply_aliases(_join(results, f"Methods referencing {string!r}", 30))
+    lines = [f"Methods referencing {string!r} ({len(data.results)} shown, offset={offset}):"]
+    for r in data.results:
+        lines.append(f"  {r}")
+    if data.has_more:
+        lines.append(f"... use offset={offset + len(data.results)} for next page")
+    return _apply_aliases("\n".join(lines))
+
+
+async def tool_search_method(
+    pattern: str, limit: int = MAX_CLASS_RESULTS, offset: int = 0
+) -> str:
+    if not analyzer.loaded:
+        return "Error: No APK loaded."
+    limit = min(limit, MAX_CLASS_RESULTS)
+    raw = await _call_analyzer(analyzer.search_methods, pattern, limit, offset)
+    shown = raw[offset:offset + limit]
+    if not shown:
+        if offset:
+            return f"No more methods matching '{pattern}' at offset={offset}."
+        return f"No methods matching '{pattern}'."
+    has_more = len(raw) > offset + limit
+    lines = [f"Methods matching '{pattern}' ({len(shown)} shown, offset={offset}):"]
+    for m in shown:
+        lines.append(f"  {m}")
+    if has_more:
+        lines.append(f"... use offset={offset + len(shown)} for next page")
+    return _apply_aliases("\n".join(lines))
 
 
 async def tool_get_class_info(class_name: str) -> str:
@@ -157,6 +233,8 @@ async def tool_get_class_info(class_name: str) -> str:
     for f in s.fields:
         iv = f" = {f.init_value}" if f.init_value else ""
         lines.append(f"  {f.access} {f.type} {f.name}{iv}")
+    if s.total_fields > MAX_FIELD_DISPLAY:
+        lines.append(f"  ... use list_fields('{class_name}', offset={MAX_FIELD_DISPLAY}) for more")
 
     # Methods
     shown = len(s.methods)
@@ -164,12 +242,82 @@ async def tool_get_class_info(class_name: str) -> str:
     for m in s.methods:
         marker = "…" if m.instr_count > MAX_BYTECODE_INSTRS else ""
         lines.append(f"  {m.access} {m.name}{m.descriptor} ({m.instr_count}{marker} instrs)")
+    if s.total_methods > MAX_METHOD_DISPLAY:
+        lines.append(f"  ... use list_methods('{class_name}', offset={MAX_METHOD_DISPLAY}) for more")
 
     # Xref
     if s.xref_from:
         lines.append(f"\nReferenced by ({len(s.xref_from)} shown{', more exist' if len(s.xref_from) >= MAX_XREF_DISPLAY else ''}):")
         for ref in s.xref_from:
             lines.append(f"  {ref}")
+
+    return _apply_aliases("\n".join(lines))
+
+
+async def tool_list_fields(
+    class_name: str, offset: int = 0, limit: int = MAX_FIELD_DISPLAY
+) -> str:
+    if not analyzer.loaded:
+        return "Error: No APK loaded."
+    limit = min(limit, MAX_FIELD_DISPLAY)
+    data = await _call_analyzer(analyzer.list_fields, class_name, offset, limit)
+    if data is None:
+        return f"Class '{class_name}' not found."
+    fields = data["fields"]
+    total = data["total"]
+    if not fields:
+        return f"=== Fields of {class_name} ===\n  (none)"
+    lines = [f"=== Fields of {class_name} ({total} total, showing {len(fields)} at offset={offset}) ==="]
+    for f in fields:
+        iv = f" = {f.init_value}" if f.init_value else ""
+        lines.append(f"  {f.access} {f.type} {f.name}{iv}")
+    if data["has_more"]:
+        lines.append(f"... use offset={offset + len(fields)} for next page")
+    return _apply_aliases("\n".join(lines))
+
+
+async def tool_list_methods(
+    class_name: str, offset: int = 0, limit: int = MAX_METHOD_DISPLAY
+) -> str:
+    if not analyzer.loaded:
+        return "Error: No APK loaded."
+    limit = min(limit, MAX_METHOD_DISPLAY)
+    data = await _call_analyzer(analyzer.list_methods, class_name, offset, limit)
+    if data is None:
+        return f"Class '{class_name}' not found."
+    methods = data["methods"]
+    total = data["total"]
+    if not methods:
+        return f"=== Methods of {class_name} ===\n  (none)"
+    lines = [f"=== Methods of {class_name} ({total} total, showing {len(methods)} at offset={offset}) ==="]
+    for m in methods:
+        marker = "…" if m.instr_count > MAX_BYTECODE_INSTRS else ""
+        lines.append(f"  {m.access} {m.name}{m.descriptor} ({m.instr_count}{marker} instrs)")
+    if data["has_more"]:
+        lines.append(f"... use offset={offset + len(methods)} for next page")
+    return _apply_aliases("\n".join(lines))
+
+
+async def tool_get_method_info(class_name: str, method_name: str, method_desc: str = "") -> str:
+    if not analyzer.loaded:
+        return "Error: No APK loaded."
+    info = await _call_analyzer(analyzer.get_method_info, class_name, method_name, method_desc)
+    if info is None:
+        return f"Method '{method_name}' not found in class '{class_name}'."
+
+    lines = [
+        f"=== {info.signature} ===",
+        f"Access: {info.access}  Instructions: {info.instr_count}",
+        f"\nCallers ({info.total_callers} total, showing {len(info.callers)}):",
+    ]
+    for c in info.callers:
+        lines.append(f"  {c}")
+    if info.total_callers > len(info.callers):
+        lines.append(f"  ... {info.total_callers - len(info.callers)} more")
+
+    lines.append("\nTop callee classes:")
+    for cn, count in info.top_callee_classes.items():
+        lines.append(f"  {cn}: {count} calls")
 
     return _apply_aliases("\n".join(lines))
 
@@ -205,27 +353,64 @@ async def tool_get_bytecode(
     return _apply_aliases("\n".join(lines))
 
 
-async def tool_get_xref(method_signature: str, direction: str = "both") -> str:
+async def tool_get_xref(
+    method_signature: str, direction: str = "both", offset: int = 0, limit: int = MAX_XREF_DISPLAY
+) -> str:
     if not analyzer.loaded:
         return "Error: No APK loaded."
-    data = await _call_analyzer(analyzer.get_xref, method_signature)
+    limit = min(limit, MAX_XREF_DISPLAY)
+    data = await _call_analyzer(analyzer.get_xref, method_signature, offset, limit)
     if data is None:
         return f"Method not found or invalid signature: {method_signature}"
 
     lines = [f"=== XREF {data.signature} ==="]
     if direction in ("from", "both"):
-        lines.append(f"\nCallers ({data.total_callers} total, showing {len(data.callers)}):")
+        lines.append(f"\nCallers ({data.total_callers} total, showing {len(data.callers)} at offset={offset}):")
         for c in data.callers:
             lines.append(f"  {c}")
-        if data.total_callers > len(data.callers):
-            lines.append(f"  ... {data.total_callers - len(data.callers)} more")
+        if data.has_more_callers:
+            lines.append(f"  ... use offset={offset + len(data.callers)} for next page")
 
     if direction in ("to", "both"):
-        lines.append(f"\nCallees ({data.total_callees} total, showing {len(data.callees)}):")
+        lines.append(f"\nCallees ({data.total_callees} total, showing {len(data.callees)} at offset={offset}):")
         for c in data.callees:
             lines.append(f"  {c}")
-        if data.total_callees > len(data.callees):
-            lines.append(f"  ... {data.total_callees - len(data.callees)} more")
+        if data.has_more_callees:
+            lines.append(f"  ... use offset={offset + len(data.callees)} for next page")
+
+    return _apply_aliases("\n".join(lines))
+
+
+async def tool_get_field_xref(
+    class_name: str,
+    field_name: str,
+    field_type: str = "",
+    direction: str = "both",
+    offset: int = 0,
+    limit: int = MAX_XREF_DISPLAY,
+) -> str:
+    if not analyzer.loaded:
+        return "Error: No APK loaded."
+    limit = min(limit, MAX_XREF_DISPLAY)
+    data = await _call_analyzer(
+        analyzer.get_field_xref, class_name, field_name, field_type, direction, offset, limit
+    )
+    if data is None:
+        return f"Field '{field_name}' not found in class '{class_name}'."
+
+    lines = [f"=== FIELD XREF {data.signature} ==="]
+    if direction in ("read", "both"):
+        lines.append(f"\nReaders ({data.total_readers} total, showing {len(data.readers)} at offset={offset}):")
+        for r in data.readers:
+            lines.append(f"  {r}")
+        if data.has_more_readers:
+            lines.append(f"  ... use offset={offset + len(data.readers)} for next page")
+    if direction in ("write", "both"):
+        lines.append(f"\nWriters ({data.total_writers} total, showing {len(data.writers)} at offset={offset}):")
+        for w in data.writers:
+            lines.append(f"  {w}")
+        if data.has_more_writers:
+            lines.append(f"  ... use offset={offset + len(data.writers)} for next page")
 
     return _apply_aliases("\n".join(lines))
 
@@ -247,75 +432,6 @@ async def tool_get_static_fields(class_name: str) -> str:
         elif f.init_label:
             val = f" = {f.init_label}"
         lines.append(f"  {f.type} {f.name}{val}")
-    return _apply_aliases("\n".join(lines))
-
-
-async def tool_search_class(pattern: str, limit: int = MAX_CLASS_RESULTS) -> str:
-    if not analyzer.loaded:
-        return "Error: No APK loaded."
-    limit = min(limit, MAX_CLASS_RESULTS)
-    matches = await _call_analyzer(analyzer.search_classes, pattern, limit)
-    if not matches:
-        return f"No classes matching '{pattern}'."
-    n = len(matches)
-    return _apply_aliases(f"Classes matching '{pattern}' ({n}):\n" + "\n".join(f"  {m}" for m in matches))
-
-
-async def tool_get_manifest() -> str:
-    if not analyzer.loaded:
-        return "Error: No APK loaded."
-    m = await _call_analyzer(analyzer.get_manifest_summary)
-    if m is None:
-        return "Error: No APK loaded."
-
-    lines = [
-        f"=== {m.app_name} ({m.package}) ===",
-        f"Version: {m.version_name} (code {m.version_code})",
-        f"SDK: min={m.min_sdk} target={m.target_sdk}",
-        f"\nPermissions ({m.total_permissions} total, showing {len(m.permissions)}):",
-    ]
-    for p in m.permissions:
-        lines.append(f"  - {p}")
-    if m.total_permissions > len(m.permissions):
-        lines.append(f"  ... {m.total_permissions - len(m.permissions)} more")
-
-    lines.append(f"\nActivities ({m.total_activities} total, showing {len(m.activities)}):")
-    for a in m.activities:
-        lines.append(f"  - {a}")
-    if m.total_activities > len(m.activities):
-        lines.append(f"  ... {m.total_activities - len(m.activities)} more")
-
-    lines.append(f"\nServices ({len(m.services)}):")
-    for s in m.services:
-        lines.append(f"  - {s}")
-    lines.append(f"\nReceivers ({len(m.receivers)}):")
-    for r in m.receivers:
-        lines.append(f"  - {r}")
-
-    return _apply_aliases("\n".join(lines))
-
-
-async def tool_get_method_info(class_name: str, method_name: str, method_desc: str = "") -> str:
-    if not analyzer.loaded:
-        return "Error: No APK loaded."
-    info = await _call_analyzer(analyzer.get_method_info, class_name, method_name, method_desc)
-    if info is None:
-        return f"Method '{method_name}' not found in class '{class_name}'."
-
-    lines = [
-        f"=== {info.signature} ===",
-        f"Access: {info.access}  Instructions: {info.instr_count}",
-        f"\nCallers ({info.total_callers} total, showing {len(info.callers)}):",
-    ]
-    for c in info.callers:
-        lines.append(f"  {c}")
-    if info.total_callers > len(info.callers):
-        lines.append(f"  ... {info.total_callers - len(info.callers)} more")
-
-    lines.append("\nTop callee classes:")
-    for cn, count in info.top_callee_classes.items():
-        lines.append(f"  {cn}: {count} calls")
-
     return _apply_aliases("\n".join(lines))
 
 
@@ -361,17 +477,20 @@ async def tool_get_alias(original: str) -> str:
     return out
 
 
-async def tool_list_aliases(pattern: str = "") -> str:
+async def tool_list_aliases(pattern: str = "", offset: int = 0, limit: int = MAX_ALIAS_LIST) -> str:
     if not db.loaded:
         return "Error: No DB loaded."
-    rows = await _call_analyzer(db.list_aliases, pattern)
-    if not rows:
+    limit = min(limit, MAX_ALIAS_LIST)
+    rows = await _call_analyzer(db.list_aliases, pattern, offset, limit)
+    total = await _call_analyzer(db.count_aliases, pattern)
+    if total == 0:
         return "No aliases found." if not pattern else f"No aliases matching '{pattern}'."
-    shown = rows[:MAX_ALIAS_LIST]
-    lines = [f"Aliases ({len(rows)} total{', showing ' + str(len(shown)) if len(rows) > MAX_ALIAS_LIST else ''}):"]
-    for r in shown:
+    lines = [f"Aliases ({total} total, showing {len(rows)} at offset={offset}):"]
+    for r in rows:
         note_str = f"  # {r['note']}" if r["note"] else ""
         lines.append(f"  [{r['alias']}] {r['original']}{note_str}")
+    if offset + len(rows) < total:
+        lines.append(f"... use offset={offset + len(rows)} for next page")
     return "\n".join(lines)
 
 
@@ -391,15 +510,19 @@ TOOL_MAP: dict[str, Any] = {
     "list_apks": tool_list_apks,
     "load_apk": tool_load_apk,
     "load_db": tool_load_db,
+    "get_manifest": tool_get_manifest,
+    "search_class": tool_search_class,
     "search_string": tool_search_string,
     "find_string_refs": tool_find_string_refs,
+    "search_method": tool_search_method,
     "get_class_info": tool_get_class_info,
+    "list_fields": tool_list_fields,
+    "list_methods": tool_list_methods,
+    "get_method_info": tool_get_method_info,
     "get_bytecode": tool_get_bytecode,
     "get_xref": tool_get_xref,
+    "get_field_xref": tool_get_field_xref,
     "get_static_fields": tool_get_static_fields,
-    "search_class": tool_search_class,
-    "get_manifest": tool_get_manifest,
-    "get_method_info": tool_get_method_info,
     "set_alias": tool_set_alias,
     "get_alias": tool_get_alias,
     "list_aliases": tool_list_aliases,

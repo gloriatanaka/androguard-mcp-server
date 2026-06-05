@@ -56,19 +56,33 @@ class AnalysisDB:
         ).fetchone()
         return (row[0], row[1] or "") if row else None
 
-    def list_aliases(self, pattern: str = "") -> list[dict[str, Any]]:
+    def list_aliases(self, pattern: str = "", offset: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         assert self._conn is not None
         if pattern:
             rows = self._conn.execute(
                 "SELECT original, alias, note FROM aliases "
-                "WHERE original LIKE ? OR alias LIKE ? ORDER BY original",
-                (f"%{pattern}%", f"%{pattern}%"),
+                "WHERE original LIKE ? OR alias LIKE ? ORDER BY original "
+                "LIMIT ? OFFSET ?",
+                (f"%{pattern}%", f"%{pattern}%", limit, offset),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT original, alias, note FROM aliases ORDER BY original"
+                "SELECT original, alias, note FROM aliases ORDER BY original "
+                "LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
         return [{"original": r[0], "alias": r[1], "note": r[2] or ""} for r in rows]
+
+    def count_aliases(self, pattern: str = "") -> int:
+        assert self._conn is not None
+        if pattern:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM aliases WHERE original LIKE ? OR alias LIKE ?",
+                (f"%{pattern}%", f"%{pattern}%"),
+            ).fetchone()
+        else:
+            row = self._conn.execute("SELECT COUNT(*) FROM aliases").fetchone()
+        return row[0]
 
     def delete_alias(self, original: str) -> bool:
         assert self._conn is not None

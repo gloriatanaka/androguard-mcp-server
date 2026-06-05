@@ -6,30 +6,44 @@ Provides structured, indexed access to APK internals at the **DEX bytecode level
 
 ## Tools
 
-### Analysis
+### Session Setup
 
 | Tool | Description |
 |---|---|
 | `list_apks` | List .apk files in the workspace |
 | `load_apk` | Load an APK (cached in memory for subsequent calls) |
-| `search_string` | Regex search across all DEX string pools |
-| `find_string_refs` | Find methods referencing a specific string (`const-string`) |
-| `get_class_info` | Class summary: superclass, interfaces, fields, methods |
-| `get_static_fields` | Static fields with initial values (string tables, constants) |
-| `get_bytecode` | Full Dalvik bytecode for a method (paginated, 60 instrs/page) |
-| `get_method_info` | Method summary with cross-reference overview |
-| `get_xref` | Cross-references: callers and callees |
+| `load_db` | Load (or create) the per-APK analysis database |
+
+### Discovery
+
+| Tool | Description |
+|---|---|
+| `get_manifest` | AndroidManifest summary: package, permissions, activities, services |
 | `search_class` | Regex search for class names |
-| `get_manifest` | AndroidManifest summary |
+| `search_string` | Regex search across all DEX string pools |
+| `find_string_refs` | Find methods referencing a specific string (`const-string`) — paginated |
+| `search_method` | Regex search for method names across all classes — paginated |
+
+### Code Inspection
+
+| Tool | Description |
+|---|---|
+| `get_class_info` | Class summary: superclass, interfaces, fields, methods |
+| `list_fields` | All fields of a class with types and initial values — paginated |
+| `list_methods` | All methods of a class with descriptors and code sizes — paginated |
+| `get_method_info` | Method summary with cross-reference overview |
+| `get_bytecode` | Dalvik bytecode for a method (paginated, 60 instrs/page) |
+| `get_xref` | Method cross-references: callers and callees — paginated |
+| `get_field_xref` | Field cross-references: which methods read or write a field — paginated |
+| `get_static_fields` | Static fields with initial values (string tables, constants) |
 
 ### Alias / Naming
 
 | Tool | Description |
 |---|---|
-| `load_db` | Load (or create) the per-APK analysis database |
 | `set_alias` | Assign a semantic name to an obfuscated class, method, or field |
 | `get_alias` | Look up the alias for a specific name |
-| `list_aliases` | List all aliases, optionally filtered by substring |
+| `list_aliases` | List aliases, optionally filtered by substring — paginated |
 | `delete_alias` | Remove an alias |
 
 Once a DB is loaded, aliases appear inline in all analysis tool outputs as `[alias] original`, so both the human-readable name and the machine-readable original are visible.

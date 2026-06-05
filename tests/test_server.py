@@ -41,15 +41,24 @@ class TestToolMap:
         expected = {
             "list_apks",
             "load_apk",
+            "load_db",
+            "get_manifest",
+            "search_class",
             "search_string",
             "find_string_refs",
+            "search_method",
             "get_class_info",
+            "list_fields",
+            "list_methods",
+            "get_method_info",
             "get_bytecode",
             "get_xref",
+            "get_field_xref",
             "get_static_fields",
-            "search_class",
-            "get_manifest",
-            "get_method_info",
+            "set_alias",
+            "get_alias",
+            "list_aliases",
+            "delete_alias",
         }
         assert set(TOOL_MAP.keys()) == expected
 
