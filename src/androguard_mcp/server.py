@@ -3,6 +3,7 @@
 import asyncio
 import functools
 import os
+import re
 import threading
 from typing import Any
 
@@ -29,9 +30,12 @@ from androguard_mcp import (
     _take,
     analyzer,
 )
+from androguard_mcp.db import db
 from androguard_mcp.tools import TOOL_DEFINITIONS
 
 WORKSPACE_DIR = os.environ.get("ANDROGUARD_WORKSPACE", os.getcwd())
+
+MAX_ALIAS_LIST = 100
 
 # threading.Lock (not asyncio.Lock) is correct here: we're protecting a shared
 # object accessed from executor threads, not from coroutines.
@@ -54,6 +58,23 @@ async def _call_analyzer(fn: Any, *args: Any, **kwargs: Any) -> Any:
 # Keep each tool's text output under ~2000 chars / ~60 lines.
 # Structured repeating lines (list items) are the main consumer;
 # we limit those per tool.
+
+
+def _apply_aliases(text: str) -> str:
+    """Replace obfuscated names in output with '[alias] original' form.
+
+    Uses a single regex pass so longer (more specific) patterns take precedence
+    over shorter ones — e.g. a method signature alias won't be partially consumed
+    by its class alias.
+    """
+    if not db.loaded:
+        return text
+    aliases = db.get_all_aliases()
+    if not aliases:
+        return text
+    sorted_originals = sorted(aliases, key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(o) for o in sorted_originals))
+    return pattern.sub(lambda m: f"[{aliases[m.group()]}] {m.group()}", text)
 
 
 def _join(items: list[str], header: str, limit: int) -> str:
@@ -105,7 +126,7 @@ async def tool_search_string(pattern: str, limit: int = MAX_STRING_RESULTS) -> s
     if not matches:
         return f"No strings matching '{pattern}'."
     n = len(matches)
-    return f"Found {n} matches for '{pattern}':\n" + "\n".join(matches)
+    return _apply_aliases(f"Found {n} matches for '{pattern}':\n" + "\n".join(matches))
 
 
 async def tool_find_string_refs(string: str, dex_index: int | None = None) -> str:
@@ -114,7 +135,7 @@ async def tool_find_string_refs(string: str, dex_index: int | None = None) -> st
     results = await _call_analyzer(analyzer.find_string_refs, string, dex_index)
     if not results:
         return f"No methods reference {string!r}."
-    return _join(results, f"Methods referencing {string!r}", 30)
+    return _apply_aliases(_join(results, f"Methods referencing {string!r}", 30))
 
 
 async def tool_get_class_info(class_name: str) -> str:
@@ -150,7 +171,7 @@ async def tool_get_class_info(class_name: str) -> str:
         for ref in s.xref_from:
             lines.append(f"  {ref}")
 
-    return "\n".join(lines)
+    return _apply_aliases("\n".join(lines))
 
 
 async def tool_get_bytecode(
@@ -181,7 +202,7 @@ async def tool_get_bytecode(
         next_offset = data["offset"] + len(data["instructions"])
         lines.append(f"\n... use offset={next_offset} for next page")
 
-    return "\n".join(lines)
+    return _apply_aliases("\n".join(lines))
 
 
 async def tool_get_xref(method_signature: str, direction: str = "both") -> str:
@@ -206,7 +227,7 @@ async def tool_get_xref(method_signature: str, direction: str = "both") -> str:
         if data.total_callees > len(data.callees):
             lines.append(f"  ... {data.total_callees - len(data.callees)} more")
 
-    return "\n".join(lines)
+    return _apply_aliases("\n".join(lines))
 
 
 async def tool_get_static_fields(class_name: str) -> str:
@@ -226,7 +247,7 @@ async def tool_get_static_fields(class_name: str) -> str:
         elif f.init_label:
             val = f" = {f.init_label}"
         lines.append(f"  {f.type} {f.name}{val}")
-    return "\n".join(lines)
+    return _apply_aliases("\n".join(lines))
 
 
 async def tool_search_class(pattern: str, limit: int = MAX_CLASS_RESULTS) -> str:
@@ -237,7 +258,7 @@ async def tool_search_class(pattern: str, limit: int = MAX_CLASS_RESULTS) -> str
     if not matches:
         return f"No classes matching '{pattern}'."
     n = len(matches)
-    return f"Classes matching '{pattern}' ({n}):\n" + "\n".join(f"  {m}" for m in matches)
+    return _apply_aliases(f"Classes matching '{pattern}' ({n}):\n" + "\n".join(f"  {m}" for m in matches))
 
 
 async def tool_get_manifest() -> str:
@@ -271,7 +292,7 @@ async def tool_get_manifest() -> str:
     for r in m.receivers:
         lines.append(f"  - {r}")
 
-    return "\n".join(lines)
+    return _apply_aliases("\n".join(lines))
 
 
 async def tool_get_method_info(class_name: str, method_name: str, method_desc: str = "") -> str:
@@ -295,7 +316,72 @@ async def tool_get_method_info(class_name: str, method_name: str, method_desc: s
     for cn, count in info.top_callee_classes.items():
         lines.append(f"  {cn}: {count} calls")
 
+    return _apply_aliases("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# DB tool implementations
+# ---------------------------------------------------------------------------
+
+async def tool_load_db(path: str | None = None, create_if_missing: bool = False) -> str:
+    if db.loaded:
+        return "Error: DB already loaded."
+    if path is None:
+        if not analyzer.loaded:
+            return "Error: APK not loaded; load_apk first or specify path explicitly."
+        path = analyzer.path + ".sqlite"
+    try:
+        await _call_analyzer(db.open, path, create_if_missing)
+    except FileNotFoundError as e:
+        return f"Error: {e}. Use create_if_missing=true to create a new DB."
+    count = await _call_analyzer(db.alias_count)
+    return f"Loaded DB: {path} ({count} aliases)"
+
+
+async def tool_set_alias(original: str, alias: str, note: str = "") -> str:
+    if not db.loaded:
+        return "Error: No DB loaded."
+    await _call_analyzer(db.set_alias, original, alias, note)
+    result = f"Alias set: [{alias}] {original}"
+    if note:
+        result += f"\n  Note: {note}"
+    return result
+
+
+async def tool_get_alias(original: str) -> str:
+    if not db.loaded:
+        return "Error: No DB loaded."
+    result = await _call_analyzer(db.get_alias, original)
+    if result is None:
+        return f"No alias for: {original}"
+    alias, note = result
+    out = f"[{alias}] {original}"
+    if note:
+        out += f"\n  Note: {note}"
+    return out
+
+
+async def tool_list_aliases(pattern: str = "") -> str:
+    if not db.loaded:
+        return "Error: No DB loaded."
+    rows = await _call_analyzer(db.list_aliases, pattern)
+    if not rows:
+        return "No aliases found." if not pattern else f"No aliases matching '{pattern}'."
+    shown = rows[:MAX_ALIAS_LIST]
+    lines = [f"Aliases ({len(rows)} total{', showing ' + str(len(shown)) if len(rows) > MAX_ALIAS_LIST else ''}):"]
+    for r in shown:
+        note_str = f"  # {r['note']}" if r["note"] else ""
+        lines.append(f"  [{r['alias']}] {r['original']}{note_str}")
     return "\n".join(lines)
+
+
+async def tool_delete_alias(original: str) -> str:
+    if not db.loaded:
+        return "Error: No DB loaded."
+    found = await _call_analyzer(db.delete_alias, original)
+    if found:
+        return f"Deleted alias for: {original}"
+    return f"No alias found for: {original}"
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +390,7 @@ async def tool_get_method_info(class_name: str, method_name: str, method_desc: s
 TOOL_MAP: dict[str, Any] = {
     "list_apks": tool_list_apks,
     "load_apk": tool_load_apk,
+    "load_db": tool_load_db,
     "search_string": tool_search_string,
     "find_string_refs": tool_find_string_refs,
     "get_class_info": tool_get_class_info,
@@ -313,6 +400,10 @@ TOOL_MAP: dict[str, Any] = {
     "search_class": tool_search_class,
     "get_manifest": tool_get_manifest,
     "get_method_info": tool_get_method_info,
+    "set_alias": tool_set_alias,
+    "get_alias": tool_get_alias,
+    "list_aliases": tool_list_aliases,
+    "delete_alias": tool_delete_alias,
 }
 
 app = Server("androguard-mcp")

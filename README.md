@@ -6,6 +6,8 @@ Provides structured, indexed access to APK internals at the **DEX bytecode level
 
 ## Tools
 
+### Analysis
+
 | Tool | Description |
 |---|---|
 | `list_apks` | List .apk files in the workspace |
@@ -19,6 +21,29 @@ Provides structured, indexed access to APK internals at the **DEX bytecode level
 | `get_xref` | Cross-references: callers and callees |
 | `search_class` | Regex search for class names |
 | `get_manifest` | AndroidManifest summary |
+
+### Alias / Naming
+
+| Tool | Description |
+|---|---|
+| `load_db` | Load (or create) the per-APK analysis database |
+| `set_alias` | Assign a semantic name to an obfuscated class, method, or field |
+| `get_alias` | Look up the alias for a specific name |
+| `list_aliases` | List all aliases, optionally filtered by substring |
+| `delete_alias` | Remove an alias |
+
+Once a DB is loaded, aliases appear inline in all analysis tool outputs as `[alias] original`, so both the human-readable name and the machine-readable original are visible.
+
+#### Typical workflow
+
+```
+load_apk("app.apk")
+load_db(create_if_missing=true)         # creates app.apk.sqlite next to the APK
+set_alias("Lcom/a/b/c;", "AuthManager", note="handles JWT validation")
+get_class_info("Lcom/a/b/c;")          # output now shows [AuthManager] Lcom/a/b/c;
+```
+
+The DB persists across server restarts — reload with `load_apk` + `load_db` to restore all aliases.
 
 ## Transport: HTTP (Streamable HTTP)
 

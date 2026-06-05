@@ -168,4 +168,92 @@ TOOL_DEFINITIONS = [
             "required": ["class_name", "method_name"],
         },
     ),
+    Tool(
+        name="load_db",
+        description=(
+            "Load the per-APK analysis database (SQLite). "
+            "Without a path, defaults to <apk_path>.sqlite — requires load_apk first. "
+            "Set create_if_missing=true to create a new DB if it doesn't exist."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the .sqlite DB file. Omit to use <apk_path>.sqlite.",
+                },
+                "create_if_missing": {
+                    "type": "boolean",
+                    "description": "Create the DB file if it doesn't exist (default false)",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="set_alias",
+        description=(
+            "Assign a semantic alias to an obfuscated class, method, or field. "
+            "The alias is persisted in the DB and shown in all subsequent tool outputs. "
+            "Use the exact original name as it appears in tool output (e.g. 'Lcom/a/b/c;' or 'Lcom/a/b/c;->a()V')."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "original": {
+                    "type": "string",
+                    "description": "Original obfuscated name (class descriptor, method signature, or field name)",
+                },
+                "alias": {
+                    "type": "string",
+                    "description": "Semantic name to assign (e.g. 'UserAuthManager')",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional free-form annotation or rationale",
+                },
+            },
+            "required": ["original", "alias"],
+        },
+    ),
+    Tool(
+        name="get_alias",
+        description="Look up the alias assigned to a specific class, method, or field name.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "original": {
+                    "type": "string",
+                    "description": "Original obfuscated name to look up",
+                },
+            },
+            "required": ["original"],
+        },
+    ),
+    Tool(
+        name="list_aliases",
+        description="List all aliases in the DB, optionally filtered by a substring pattern.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional substring to filter by (matches original or alias)",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="delete_alias",
+        description="Remove an alias from the DB.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "original": {
+                    "type": "string",
+                    "description": "Original obfuscated name whose alias should be deleted",
+                },
+            },
+            "required": ["original"],
+        },
+    ),
 ]

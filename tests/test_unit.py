@@ -72,6 +72,7 @@ class TestServerNoAPK:
         expected = {
             "list_apks",
             "load_apk",
+            "load_db",
             "search_string",
             "find_string_refs",
             "get_class_info",
@@ -81,6 +82,10 @@ class TestServerNoAPK:
             "search_class",
             "get_manifest",
             "get_method_info",
+            "set_alias",
+            "get_alias",
+            "list_aliases",
+            "delete_alias",
         }
         assert set(TOOL_MAP.keys()) == expected
 
